@@ -132,9 +132,13 @@ class NewsArticle(Base):
     category = Column(String(50))  # 'market', 'company', 'economic', 'political'
     relevance_score = Column(Numeric(3, 2))  # 0.0 to 1.0
     
-    # Sentiment analysis
+    # Sentiment analysis (enhanced for qualitative engine)
     sentiment_score = Column(Numeric(3, 2))  # -1.0 to 1.0
     sentiment_label = Column(String(20))  # 'positive', 'negative', 'neutral'
+    confidence = Column(Numeric(3, 2))  # 0.0 to 1.0 from AI analysis
+    themes = Column(Text)  # JSON array of extracted themes
+    ai_summary = Column(Text)  # AI-generated summary
+    processed_at = Column(DateTime)  # When sentiment analysis was completed
     
     # Text embeddings for similarity search (pgvector)
     embedding = Column(Text)  # JSON serialized vector
@@ -191,7 +195,7 @@ class DataIngestionLog(Base):
     end_time = Column(DateTime)
     records_processed = Column(Integer, default=0)
     error_message = Column(Text)
-    metadata = Column(Text)  # JSON for additional info
+    process_metadata = Column(Text)  # JSON for additional info
     
     # Indexes
     __table_args__ = (
@@ -202,3 +206,122 @@ class DataIngestionLog(Base):
     
     def __repr__(self):
         return f"<DataIngestionLog(type='{self.process_type}', status='{self.status}', time='{self.start_time}')>"
+
+class QuantitativeScores(Base):
+    """Daily quantitative analysis scores for stocks"""
+    __tablename__ = "quantitative_scores"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
+    analysis_date = Column(DateTime, nullable=False)
+    
+    # Valuation metrics
+    pe_ratio = Column(Numeric(10, 2))
+    pb_ratio = Column(Numeric(10, 2))
+    pe_relative_score = Column(Numeric(5, 2))  # 0-100 score vs historical/industry
+    pb_relative_score = Column(Numeric(5, 2))  # 0-100 score vs historical/industry
+    
+    # Technical indicators
+    rsi = Column(Numeric(5, 2))  # 0-100
+    rsi_score = Column(Numeric(5, 2))  # 0-100 score based on RSI
+    ma_50 = Column(Numeric(15, 2))  # 50-day moving average
+    ma_200 = Column(Numeric(15, 2))  # 200-day moving average
+    ma_signal = Column(String(10))  # 'bullish', 'bearish', 'neutral'
+    ma_score = Column(Numeric(5, 2))  # 0-100 score based on MA position
+    
+    # Volume analysis
+    volume_trend = Column(String(10))  # 'increasing', 'decreasing', 'stable'
+    volume_score = Column(Numeric(5, 2))  # 0-100 score based on volume
+    
+    # Composite scores
+    valuation_score = Column(Numeric(5, 2))  # 0-100 composite valuation
+    technical_score = Column(Numeric(5, 2))  # 0-100 composite technical
+    composite_score = Column(Numeric(5, 2))  # 0-100 overall quantitative score
+    
+    created_at = Column(DateTime, default=func.now())
+    
+    # Relationships
+    stock = relationship("Stock")
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_quantitative_scores_stock_date", "stock_id", "analysis_date"),
+        Index("idx_quantitative_scores_date", "analysis_date"),
+        Index("idx_quantitative_scores_composite", "composite_score"),
+        UniqueConstraint("stock_id", "analysis_date", name="uq_quantitative_score_date"),
+    )
+    
+    def __repr__(self):
+        return f"<QuantitativeScores(stock_id={self.stock_id}, date='{self.analysis_date}', score={self.composite_score})>"
+
+class SentimentAnalysis(Base):
+    """Processed sentiment analysis results for news articles"""
+    __tablename__ = "sentiment_analysis"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    news_article_id = Column(Integer, ForeignKey("news_articles.id"), nullable=False)
+    
+    # Gemini analysis results
+    sentiment_score = Column(Numeric(3, 2), nullable=False)  # -1.0 to 1.0
+    confidence = Column(Numeric(3, 2), nullable=False)  # 0.0 to 1.0
+    themes = Column(Text)  # JSON array of themes
+    summary = Column(Text)  # Brief summary from AI
+    relevance = Column(Numeric(3, 2))  # 0.0 to 1.0 relevance to stock price
+    
+    # Processing metadata
+    model_used = Column(String(50), default="gemini-2.5-pro")
+    processing_time_ms = Column(Integer)
+    created_at = Column(DateTime, default=func.now())
+    
+    # Relationships
+    news_article = relationship("NewsArticle")
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_sentiment_analysis_article", "news_article_id"),
+        Index("idx_sentiment_analysis_sentiment", "sentiment_score"),
+        Index("idx_sentiment_analysis_created", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<SentimentAnalysis(article_id={self.news_article_id}, sentiment={self.sentiment_score}, confidence={self.confidence})>"
+
+class DailyRecommendations(Base):
+    """Daily ranked stock recommendations based on combined analysis"""
+    __tablename__ = "daily_recommendations"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
+    recommendation_date = Column(DateTime, nullable=False)
+    
+    # Analysis scores
+    quantitative_score = Column(Numeric(5, 2))  # 0-100
+    qualitative_score = Column(Numeric(5, 2))  # 0-100 from news sentiment
+    combined_score = Column(Numeric(5, 2))  # 0-100 final weighted score
+    
+    # Recommendation details
+    recommendation = Column(String(10))  # 'BUY', 'HOLD', 'SELL'
+    confidence_level = Column(String(10))  # 'HIGH', 'MEDIUM', 'LOW'
+    price_target = Column(Numeric(15, 2))  # Estimated target price
+    
+    # Supporting data
+    key_themes = Column(Text)  # JSON array of key themes from news
+    technical_signals = Column(Text)  # JSON object of technical signals
+    risk_factors = Column(Text)  # JSON array of identified risks
+    
+    created_at = Column(DateTime, default=func.now())
+    
+    # Relationships
+    stock = relationship("Stock")
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_daily_recommendations_stock_date", "stock_id", "recommendation_date"),
+        Index("idx_daily_recommendations_date", "recommendation_date"),
+        Index("idx_daily_recommendations_score", "combined_score"),
+        Index("idx_daily_recommendations_rec", "recommendation"),
+        UniqueConstraint("stock_id", "recommendation_date", name="uq_daily_recommendation_date"),
+    )
+    
+    def __repr__(self):
+        return f"<DailyRecommendations(stock_id={self.stock_id}, date='{self.recommendation_date}', rec='{self.recommendation}', score={self.combined_score})>"
