@@ -4,10 +4,14 @@ Configuration management for AlphaGen Investment Platform
 import os
 from typing import Optional
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Try to load dotenv, but don't fail if not available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
 
 class Config:
     """Application configuration class"""
