@@ -1,0 +1,17 @@
+# Core dependencies
+fastapi==0.95.0
+uvicorn==0.22.0
+pandas==1.5.0
+numpy==1.24.0
+sqlalchemy==2.0.0
+psycopg2-binary==2.9.6
+streamlit==1.25.0
+
+# Data ingestion
+yfinance==0.2.26
+newsapi-python==0.3.7
+feedparser==6.0.10
+
+# AI and analytics
+google-generativeai==0.5.2
+scikit-learn==1.3.0
