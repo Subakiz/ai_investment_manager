@@ -8,7 +8,7 @@ from typing import Optional
 from datetime import datetime
 import sys
 
-from .settings import config
+from ..config.settings import config
 
 class Logger:
     """Custom logger class for the application"""

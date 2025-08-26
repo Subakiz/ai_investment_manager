@@ -11,6 +11,8 @@ import sys
 
 from .market_data import MarketDataCollector
 from .news_data import NewsDataCollector
+from ..analysis.quantitative import QuantitativeAnalyzer
+from ..analysis.qualitative import QualitativeAnalyzer
 from ..database.database import init_database
 from ..utils.logger import get_pipeline_logger
 from ..config.settings import config
@@ -23,6 +25,8 @@ class DataPipeline:
     def __init__(self):
         self.market_collector = MarketDataCollector()
         self.news_collector = NewsDataCollector()
+        self.quantitative_analyzer = QuantitativeAnalyzer()
+        self.qualitative_analyzer = QualitativeAnalyzer()
         self.running = False
     
     async def initialize(self):
@@ -137,9 +141,59 @@ class DataPipeline:
                 'timestamp': datetime.now().isoformat()
             }
     
+    async def run_quantitative_analysis(self):
+        """Run quantitative analysis on collected market data"""
+        logger.info("Starting scheduled quantitative analysis")
+        
+        try:
+            results = await self.quantitative_analyzer.run_quantitative_analysis()
+            logger.info(f"Quantitative analysis completed: {results}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Quantitative analysis failed: {e}")
+            return {'analyzed': 0, 'saved': 0, 'errors': 1}
+    
+    async def run_qualitative_analysis(self):
+        """Run qualitative analysis on collected news data"""
+        logger.info("Starting scheduled qualitative analysis")
+        
+        try:
+            results = await self.qualitative_analyzer.run_qualitative_analysis(hours_back=24)
+            logger.info(f"Qualitative analysis completed: {results}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Qualitative analysis failed: {e}")
+            return {'processed': 0, 'saved': 0, 'errors': 1}
+    
+    async def run_combined_analysis(self):
+        """Run both quantitative and qualitative analysis"""
+        logger.info("Starting combined analysis workflow")
+        
+        try:
+            # Run quantitative analysis first
+            quant_results = await self.run_quantitative_analysis()
+            
+            # Run qualitative analysis 
+            qual_results = await self.run_qualitative_analysis()
+            
+            combined_results = {
+                'quantitative': quant_results,
+                'qualitative': qual_results,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            logger.info(f"Combined analysis completed: {combined_results}")
+            return combined_results
+            
+        except Exception as e:
+            logger.error(f"Combined analysis failed: {e}")
+            return {'quantitative': {'errors': 1}, 'qualitative': {'errors': 1}}
+    
     def setup_schedule(self):
         """Setup scheduled jobs"""
-        logger.info("Setting up data pipeline schedule")
+        logger.info("Setting up enhanced data pipeline schedule")
         
         # Market data collection after IDX close (4:30 PM WIB = 9:30 UTC)
         schedule.every().day.at(config.LQ45_UPDATE_TIME).do(
@@ -149,6 +203,17 @@ class DataPipeline:
         # News data collection after market close (4:45 PM WIB = 9:45 UTC)
         schedule.every().day.at(config.NEWS_UPDATE_TIME).do(
             lambda: asyncio.create_task(self.run_daily_news_collection())
+        )
+        
+        # PHASE 2: Analysis workflow after data collection
+        # Quantitative analysis at 5:00 PM WIB (10:00 UTC)
+        schedule.every().day.at("10:00").do(
+            lambda: asyncio.create_task(self.run_quantitative_analysis())
+        )
+        
+        # Qualitative analysis at 5:15 PM WIB (10:15 UTC)
+        schedule.every().day.at("10:15").do(
+            lambda: asyncio.create_task(self.run_qualitative_analysis())
         )
         
         # Financial statements collection weekly on Sundays
@@ -161,7 +226,7 @@ class DataPipeline:
             lambda: asyncio.create_task(self.run_health_check())
         )
         
-        logger.info("Schedule setup completed")
+        logger.info("Enhanced schedule setup completed with analysis workflows")
     
     async def start_scheduler(self):
         """Start the scheduled data pipeline"""
@@ -192,7 +257,7 @@ class DataPipeline:
     
     async def run_manual_collection(self, collection_type: str = "all", days_back: int = 1):
         """Run manual data collection"""
-        logger.info(f"Starting manual {collection_type} collection for {days_back} days")
+        logger.info(f"Starting manual {collection_type} operation")
         
         results = {}
         
@@ -206,11 +271,21 @@ class DataPipeline:
             if collection_type in ["all", "financials"]:
                 results['financial_statements'] = await self.run_weekly_financial_statements_collection()
             
-            logger.info(f"Manual collection completed: {results}")
+            # PHASE 2: Analysis options
+            if collection_type in ["all", "analyze-quantitative"]:
+                results['quantitative_analysis'] = await self.run_quantitative_analysis()
+            
+            if collection_type in ["all", "analyze-qualitative"]:
+                results['qualitative_analysis'] = await self.run_qualitative_analysis()
+            
+            if collection_type in ["analyze-all"]:
+                results['combined_analysis'] = await self.run_combined_analysis()
+            
+            logger.info(f"Manual operation completed: {results}")
             return results
             
         except Exception as e:
-            logger.error(f"Manual collection failed: {e}")
+            logger.error(f"Manual operation failed: {e}")
             raise
 
 # CLI interface
@@ -218,11 +293,15 @@ async def main():
     """Main function for CLI usage"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="AlphaGen Data Pipeline")
-    parser.add_argument('command', choices=['init', 'run', 'schedule', 'health', 'collect'], 
-                       help='Command to execute')
-    parser.add_argument('--type', choices=['all', 'market', 'news', 'financials'], 
-                       default='all', help='Type of data to collect (for collect command)')
+    parser = argparse.ArgumentParser(description="AlphaGen Data Pipeline with Analysis Engine")
+    parser.add_argument('command', choices=[
+        'init', 'run', 'schedule', 'health', 'collect', 
+        'analyze-quantitative', 'analyze-qualitative', 'analyze-all'
+    ], help='Command to execute')
+    parser.add_argument('--type', choices=[
+        'all', 'market', 'news', 'financials', 
+        'analyze-quantitative', 'analyze-qualitative', 'analyze-all'
+    ], default='all', help='Type of operation to run')
     parser.add_argument('--days', type=int, default=1, 
                        help='Number of days back to collect data')
     
@@ -267,6 +346,21 @@ async def main():
             
             # Run collection
             await pipeline.run_manual_collection(args.type, args.days)
+        
+        elif args.command == 'analyze-quantitative':
+            print("Running quantitative analysis...")
+            results = await pipeline.run_quantitative_analysis()
+            print(f"Quantitative analysis results: {results}")
+            
+        elif args.command == 'analyze-qualitative':
+            print("Running qualitative analysis...")
+            results = await pipeline.run_qualitative_analysis()
+            print(f"Qualitative analysis results: {results}")
+            
+        elif args.command == 'analyze-all':
+            print("Running combined analysis...")
+            results = await pipeline.run_combined_analysis()
+            print(f"Combined analysis results: {results}")
         
     except KeyboardInterrupt:
         logger.info("Pipeline interrupted by user")
