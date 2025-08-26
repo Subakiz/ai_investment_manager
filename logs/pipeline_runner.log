@@ -1,9 +1,0 @@
-2025-08-26 10:30:56 - Virtual environment activated
-[0;31m2025-08-26 10:30:56 - ERROR: .env file not found. Please run setup.sh first.[0m
-2025-08-26 10:31:16 - Virtual environment activated
-2025-08-26 10:31:49 - Virtual environment activated
-2025-08-26 10:31:49 - Starting AlphaGen data pipeline collection
-2025-08-26 10:31:49 - Collection type: news
-2025-08-26 10:31:49 - Days back: 3
-[0;32m2025-08-26 10:31:49 - SUCCESS: Data pipeline collection completed successfully[0m
-2025-08-26 10:35:06 - Virtual environment activated
