@@ -10,14 +10,18 @@ import asyncio
 from ..database.database import get_async_db_session, db_manager
 from ..database.models import (
     Stock, StockPrice, NewsArticle, DataIngestionLog,
-    QuantitativeScores, SentimentAnalysis, DailyRecommendations
+    QuantitativeScores, SentimentAnalysis, DailyRecommendations,
+    Portfolio, Trade
 )
 from ..data_pipeline.pipeline import DataPipeline
 from ..utils.logger import get_logger
 from ..config.settings import config
+from ..analysis.risk import calculate_volatility_score
 from .schemas import (
     RecommendationResponse, QuantitativeScoreResponse, QualitativeScoreResponse,
-    HistoricalScoresResponse, HistoricalScorePoint, StockInfo, ErrorResponse
+    HistoricalScoresResponse, HistoricalScorePoint, StockInfo, ErrorResponse,
+    TradeRequest, Trade as TradeResponse, PortfolioResponse, PortfolioHolding,
+    RiskScore
 )
 from sqlalchemy import select, func, desc, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -695,6 +699,250 @@ async def get_historical_scores(
     except Exception as e:
         logger.error(f"Error fetching historical scores for {symbol}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch historical scores")
+
+
+# Portfolio Management Endpoints
+
+@app.post("/api/v1/portfolio/{portfolio_name}/trade", response_model=TradeResponse)
+async def add_trade_to_portfolio(
+    portfolio_name: str,
+    trade_request: TradeRequest,
+    db: AsyncSession = Depends(get_async_db_session)
+):
+    """Adds a trade (BUY/SELL) of a specific stock to a portfolio"""
+    try:
+        # Find or create portfolio
+        portfolio_query = select(Portfolio).where(Portfolio.name == portfolio_name)
+        portfolio_result = await db.execute(portfolio_query)
+        portfolio = portfolio_result.scalar_one_or_none()
+        
+        if not portfolio:
+            # Create new portfolio
+            portfolio = Portfolio(name=portfolio_name)
+            db.add(portfolio)
+            await db.flush()  # Get the ID
+        
+        # Find the stock
+        stock_query = select(Stock).where(Stock.symbol == trade_request.symbol.upper())
+        stock_result = await db.execute(stock_query)
+        stock = stock_result.scalar_one_or_none()
+        
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Stock with symbol {trade_request.symbol} not found")
+        
+        # Validate action
+        if trade_request.action.upper() not in ['BUY', 'SELL']:
+            raise HTTPException(status_code=400, detail="Action must be 'BUY' or 'SELL'")
+        
+        # Calculate total value
+        total_value = trade_request.quantity * trade_request.price
+        
+        # Create trade
+        trade = Trade(
+            portfolio_id=portfolio.id,
+            stock_id=stock.id,
+            action=trade_request.action.upper(),
+            quantity=trade_request.quantity,
+            price=trade_request.price,
+            total_value=total_value,
+            trade_date=trade_request.trade_date or datetime.now(),
+            notes=trade_request.notes
+        )
+        
+        db.add(trade)
+        await db.commit()
+        await db.refresh(trade)
+        
+        return TradeResponse(
+            id=trade.id,
+            portfolio_id=trade.portfolio_id,
+            stock_symbol=stock.symbol,
+            action=trade.action,
+            quantity=trade.quantity,
+            price=float(trade.price),
+            total_value=float(trade.total_value),
+            trade_date=trade.trade_date,
+            notes=trade.notes
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding trade to portfolio {portfolio_name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add trade")
+
+
+@app.get("/api/v1/portfolio/{portfolio_name}", response_model=PortfolioResponse)
+async def get_portfolio(
+    portfolio_name: str,
+    db: AsyncSession = Depends(get_async_db_session)
+):
+    """Retrieves the current holdings and performance of a named portfolio"""
+    try:
+        # Find portfolio
+        portfolio_query = select(Portfolio).where(Portfolio.name == portfolio_name)
+        portfolio_result = await db.execute(portfolio_query)
+        portfolio = portfolio_result.scalar_one_or_none()
+        
+        if not portfolio:
+            raise HTTPException(status_code=404, detail=f"Portfolio '{portfolio_name}' not found")
+        
+        # Get all trades for this portfolio
+        trades_query = (
+            select(Trade, Stock)
+            .join(Stock, Trade.stock_id == Stock.id)
+            .where(Trade.portfolio_id == portfolio.id)
+            .order_by(desc(Trade.trade_date))
+        )
+        
+        trades_result = await db.execute(trades_query)
+        trades_with_stocks = trades_result.all()
+        
+        # Calculate holdings
+        holdings_dict = {}
+        total_cost = 0.0
+        recent_trades = []
+        
+        for trade, stock in trades_with_stocks:
+            symbol = stock.symbol
+            
+            # Add to recent trades (last 10)
+            if len(recent_trades) < 10:
+                recent_trades.append(TradeResponse(
+                    id=trade.id,
+                    portfolio_id=trade.portfolio_id,
+                    stock_symbol=symbol,
+                    action=trade.action,
+                    quantity=trade.quantity,
+                    price=float(trade.price),
+                    total_value=float(trade.total_value),
+                    trade_date=trade.trade_date,
+                    notes=trade.notes
+                ))
+            
+            # Calculate holdings
+            if symbol not in holdings_dict:
+                holdings_dict[symbol] = {
+                    'company_name': stock.company_name,
+                    'total_shares': 0,
+                    'total_cost': 0.0,
+                    'total_value': 0.0
+                }
+            
+            if trade.action == 'BUY':
+                holdings_dict[symbol]['total_shares'] += trade.quantity
+                holdings_dict[symbol]['total_cost'] += float(trade.total_value)
+                total_cost += float(trade.total_value)
+            elif trade.action == 'SELL':
+                holdings_dict[symbol]['total_shares'] -= trade.quantity
+                holdings_dict[symbol]['total_cost'] -= float(trade.total_value)
+                total_cost -= float(trade.total_value)
+        
+        # Get current prices for holdings
+        holdings = []
+        current_value = 0.0
+        
+        for symbol, holding_data in holdings_dict.items():
+            if holding_data['total_shares'] > 0:  # Only include holdings with positive shares
+                # Get latest price
+                price_query = (
+                    select(StockPrice)
+                    .join(Stock, StockPrice.stock_id == Stock.id)
+                    .where(Stock.symbol == symbol)
+                    .order_by(desc(StockPrice.trade_date))
+                    .limit(1)
+                )
+                
+                price_result = await db.execute(price_query)
+                latest_price = price_result.scalar_one_or_none()
+                
+                current_price = float(latest_price.close_price) if latest_price else None
+                market_value = current_price * holding_data['total_shares'] if current_price else None
+                average_cost = holding_data['total_cost'] / holding_data['total_shares'] if holding_data['total_shares'] > 0 else 0
+                
+                unrealized_pnl = None
+                unrealized_pnl_percent = None
+                
+                if market_value and holding_data['total_cost'] > 0:
+                    unrealized_pnl = market_value - holding_data['total_cost']
+                    unrealized_pnl_percent = (unrealized_pnl / holding_data['total_cost']) * 100
+                    current_value += market_value
+                
+                holdings.append(PortfolioHolding(
+                    stock_symbol=symbol,
+                    company_name=holding_data['company_name'],
+                    total_shares=holding_data['total_shares'],
+                    average_cost=average_cost,
+                    current_price=current_price,
+                    market_value=market_value,
+                    unrealized_pnl=unrealized_pnl,
+                    unrealized_pnl_percent=unrealized_pnl_percent
+                ))
+        
+        # Calculate total P&L
+        total_pnl = None
+        total_pnl_percent = None
+        
+        if current_value > 0 and total_cost > 0:
+            total_pnl = current_value - total_cost
+            total_pnl_percent = (total_pnl / total_cost) * 100
+        
+        return PortfolioResponse(
+            portfolio_name=portfolio.name,
+            created_at=portfolio.created_at,
+            total_cost=total_cost,
+            current_value=current_value if current_value > 0 else None,
+            total_pnl=total_pnl,
+            total_pnl_percent=total_pnl_percent,
+            holdings=holdings,
+            recent_trades=recent_trades
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching portfolio {portfolio_name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch portfolio")
+
+
+# Risk Analysis Endpoints
+
+@app.get("/api/v1/risk/{symbol}", response_model=RiskScore)
+async def get_risk_analysis(
+    symbol: str,
+    days: int = 30,
+    db: AsyncSession = Depends(get_async_db_session)
+):
+    """Returns risk analysis and volatility score for a stock symbol"""
+    try:
+        # Validate that the stock exists
+        stock_query = select(Stock).where(Stock.symbol == symbol.upper())
+        stock_result = await db.execute(stock_query)
+        stock = stock_result.scalar_one_or_none()
+        
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Stock with symbol {symbol} not found")
+        
+        # Calculate risk metrics
+        risk_data = await calculate_volatility_score(symbol.upper(), days)
+        
+        return RiskScore(
+            stock_symbol=risk_data['stock_symbol'],
+            analysis_date=risk_data['analysis_date'],
+            volatility_30d=risk_data['volatility_30d'],
+            risk_score=risk_data['risk_score'],
+            risk_level=risk_data['risk_level'],
+            beta=risk_data.get('beta'),
+            max_drawdown=risk_data.get('max_drawdown')
+        )
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error calculating risk analysis for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to calculate risk analysis")
 
 
 @app.get("/config")
