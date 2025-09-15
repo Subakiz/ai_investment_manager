@@ -325,3 +325,57 @@ class DailyRecommendations(Base):
     
     def __repr__(self):
         return f"<DailyRecommendations(stock_id={self.stock_id}, date='{self.recommendation_date}', rec='{self.recommendation}', score={self.combined_score})>"
+
+
+class Portfolio(Base):
+    """Portfolio tracking for investment performance"""
+    __tablename__ = "portfolios"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    description = Column(Text)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    trades = relationship("Trade", back_populates="portfolio", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<Portfolio(name='{self.name}', created='{self.created_at}')>"
+
+
+class Trade(Base):
+    """Individual trades within a portfolio"""
+    __tablename__ = "trades"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id"), nullable=False)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
+    
+    # Trade details
+    action = Column(String(10), nullable=False)  # 'BUY' or 'SELL'
+    quantity = Column(Integer, nullable=False)
+    price = Column(Numeric(15, 2), nullable=False)
+    total_value = Column(Numeric(20, 2), nullable=False)  # quantity * price
+    trade_date = Column(DateTime, nullable=False)
+    
+    # Optional fields
+    fees = Column(Numeric(10, 2), default=0)  # Transaction fees
+    notes = Column(Text)
+    
+    created_at = Column(DateTime, default=func.now())
+    
+    # Relationships
+    portfolio = relationship("Portfolio", back_populates="trades")
+    stock = relationship("Stock")
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_trades_portfolio", "portfolio_id"),
+        Index("idx_trades_stock", "stock_id"),
+        Index("idx_trades_date", "trade_date"),
+        Index("idx_trades_action", "action"),
+    )
+    
+    def __repr__(self):
+        return f"<Trade(portfolio_id={self.portfolio_id}, stock_id={self.stock_id}, action='{self.action}', qty={self.quantity}, price={self.price})>"
