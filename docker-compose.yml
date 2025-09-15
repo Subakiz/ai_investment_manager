@@ -5,15 +5,26 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
-      - ENV=development
-    volumes:
-      - .:/app
+      - ENVIRONMENT=production
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=alphagen
+      - DB_USER=alphauser
+      - DB_PASSWORD=alphapass
+      # These should be injected by the deployment environment
+      # - NEWS_API_KEY=${NEWS_API_KEY}
+      # - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
-      - db
-    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   db:
     image: postgres:14
@@ -25,6 +36,13 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alphauser -d alphagen"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   pg_data:
